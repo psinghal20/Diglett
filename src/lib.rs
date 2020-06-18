@@ -1,41 +1,42 @@
 use eyre::{eyre, Result};
+use std::net::Ipv4Addr;
 
 #[derive(Clone)]
-struct PacketBuffer {
+pub struct PacketBuffer {
     buf: [u8; 512],
     pos: usize,
 }
 
 impl PacketBuffer {
-    fn new() -> PacketBuffer {
+    pub fn new() -> PacketBuffer {
         return PacketBuffer {
             buf: [0; 512],
             pos: 0,
         };
     }
 
-    fn pos(&self) -> usize {
+    pub fn pos(&self) -> usize {
         self.pos
     }
 
-    fn step(&mut self) {
-        self.pos += 1;
+    pub fn step(&mut self, steps: usize) {
+        self.pos += steps;
     }
 
-    fn seek(&mut self, pos: usize) {
+    pub fn seek(&mut self, pos: usize) {
         self.pos = pos;
     }
 
-    fn read(&mut self) -> Result<u8> {
+    pub fn read(&mut self) -> Result<u8> {
         if self.pos >= 512 {
             return Err(eyre!("Buffer position exceeded"));
         }
         let result = self.buf[self.pos];
-        self.step();
+        self.pos += 1;
         Ok(result)
     }
 
-    fn get(&self, pos: usize) -> Result<u8> {
+    pub fn get(&self, pos: usize) -> Result<u8> {
         if pos >= 512 {
             return Err(eyre!("Buffer position exceeded"));
         }
@@ -43,7 +44,7 @@ impl PacketBuffer {
         Ok(res)
     }
 
-    fn get_range(&self, pos: usize, len: usize) -> Result<&[u8]> {
+    pub fn get_range(&self, pos: usize, len: usize) -> Result<&[u8]> {
         if pos >= 512 {
             return Err(eyre!("Buffer position exeeded!"));
         }
@@ -51,17 +52,17 @@ impl PacketBuffer {
         Ok(res)
     }
 
-    fn read_u16(&mut self) -> Result<u16> {
+    pub fn read_u16(&mut self) -> Result<u16> {
         let res = ((self.read()? as u16) << 8) | (self.read()? as u16);
         Ok(res)
     }
 
-    fn read_u32(&mut self) -> Result<u32> {
+    pub fn read_u32(&mut self) -> Result<u32> {
         let res = ((self.read_u16()? as u32) << 16 ) | (self.read_u16()? as u32);
         Ok(res)
     }
 
-    fn read_qname(&mut self, output: &mut String) -> Result<()> {
+    pub fn read_qname(&mut self, output: &mut String) -> Result<()> {
         let mut pos = self.pos();
         let mut jump = false;
         let mut delim = "";
@@ -123,7 +124,7 @@ impl RCode {
     }
 }
 
-struct DNSHeader {
+pub struct DNSHeader {
     pub id: u16,
     pub query_response: bool,
     pub opcode: u8, // We only need 4 bits of these 8
@@ -141,7 +142,7 @@ struct DNSHeader {
 }
 
 impl DNSHeader {
-    fn new() -> DNSHeader {
+    pub fn new() -> DNSHeader {
         DNSHeader {
             id: 0,
             query_response: false,
@@ -159,7 +160,7 @@ impl DNSHeader {
         }
     }
 
-    pub fn read(&mut self, mut buf: PacketBuffer) -> Result<()> {
+    pub fn read(&mut self, buf: &mut PacketBuffer) -> Result<()> {
         self.id = buf.read_u16()?;
         let flags = buf.read_u16()?;
         self.query_response = (flags & (1 << 15)) > 0;
@@ -191,10 +192,129 @@ impl QueryType {
             Self::A => 1,
         }
     }
-    fn from_num(&self, num: u16) -> Self {
+    fn from_num(num: u16) -> Self {
         match num {
             1 => Self::A,
             _ => Self::UNKNOWN(num)
         }
+    }
+}
+
+pub struct DNSQuestion {
+    name: String,
+    q_type: QueryType,
+}
+
+impl DNSQuestion {
+    fn new(name: String, q_type: QueryType) -> Self {
+        Self {
+            name,
+            q_type,
+        }
+    }
+
+    pub fn read(buf: &mut PacketBuffer) -> Result<DNSQuestion>{
+        let mut name = String::new();
+        buf.read_qname(&mut name)?;
+        let q_type = QueryType::from_num(buf.read_u16()?);
+        buf.read_u16()?;
+        Ok(DNSQuestion{
+            name,
+            q_type,
+        })
+    }
+}
+
+pub enum DNSRecord {
+    UNKNOWN {
+        name: String,
+        q_type: QueryType,
+        class: u16,
+        ttl: u32,
+        len: u32
+    },
+    A {
+        name: String,
+        q_type: QueryType,
+        class: u16,
+        ttl: u32,
+        len: u32,
+        addr: Ipv4Addr,
+    }
+}
+
+impl DNSRecord {
+    fn read(buf: &mut PacketBuffer) -> Result<DNSRecord> {
+        let mut domain = String::new();
+        buf.read_qname(&mut domain)?;
+        let q_type = QueryType::from_num(buf.read_u16()?);
+        let class = buf.read_u16()?;
+        let ttl = buf.read_u32()?;
+        let len = buf.read_u32()?;
+        match q_type {
+            QueryType::A => {
+                // We have a A record query
+                let raw_ip = buf.read_u32()?;
+                let addr = Ipv4Addr::new((raw_ip >> 24) as u8, (raw_ip >> 16) as u8, (raw_ip >> 8) as u8, (raw_ip) as u8);
+                Ok(DNSRecord::A {
+                    name: domain,
+                    q_type: q_type,
+                    class: class,
+                    ttl: ttl,
+                    len: len,
+                    addr: addr
+                })
+            },
+            QueryType::UNKNOWN(_) => {
+                buf.step(len as usize); // Skip the data length of this particular record type 
+                Ok(DNSRecord::UNKNOWN {
+                    name: domain,
+                    q_type: q_type,
+                    class: class,
+                    ttl: ttl,
+                    len: len
+                })
+            }
+        }
+    }
+}
+
+pub struct DNSPacket {
+    pub header: DNSHeader,
+    pub questions: Vec<DNSQuestion>,
+    pub answers: Vec<DNSRecord>,
+    pub authority: Vec<DNSRecord>,
+    pub addtional: Vec<DNSRecord>
+}
+
+impl DNSPacket {
+    fn new() -> DNSPacket {
+        DNSPacket {
+            header: DNSHeader::new(),
+            questions: Vec::new(),
+            answers: Vec::new(),
+            authority: Vec::new(),
+            addtional: Vec::new(),
+        }
+    }
+    fn from_buffer(buf: &mut PacketBuffer) -> Result<DNSPacket> {
+        let mut result = DNSPacket::new();
+        result.header.read(buf)?;
+        for _ in 0..result.header.q_count {
+            result.questions.push(DNSQuestion::read(buf)?);
+        }
+
+        for _ in 0..result.header.an_count {
+            result.answers.push(DNSRecord::read(buf)?);
+        }
+
+        for _ in 0..result.header.ns_count {
+            result.authority.push(DNSRecord::read(buf)?);
+        }
+
+        for _ in 0..result.header.ad_count {
+            result.addtional.push(DNSRecord::read(buf)?);
+        }
+        Ok(result)
     }
 }
