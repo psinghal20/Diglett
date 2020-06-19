@@ -20,7 +20,6 @@ impl PacketBuffer {
     }
 
     pub fn step(&mut self, steps: usize) {
-        println!("STEPS: {}", steps);
         self.pos += steps;
     }
 
@@ -64,11 +63,9 @@ impl PacketBuffer {
     }
 
     pub fn read_qname(&mut self, output: &mut String) -> Result<()> {
-        println!("Entered q_name");
         let mut pos = self.pos();
         let mut jump = false;
         let mut delim = "";
-        println!("POS: {}", pos);
 
         loop {
             let len = self.get(pos)?;
@@ -81,12 +78,10 @@ impl PacketBuffer {
                 let byte2 = self.get(pos+1)? as u16;
                 let offset = ((len as u16) ^ 0xC0) << 8 | byte2;
                 pos = offset as usize;
-                println!("Offset: {}", pos);
                 jump = true;
             } else {
                 pos += 1; // move to next byte
                 if len == 0 {
-                    println!("OUTPUT STRING LABLE: {}", output);
                     break;
                     // Null length means end of label
                 }
@@ -104,7 +99,6 @@ impl PacketBuffer {
         if !jump {
             self.seek(pos);
         }
-        println!("DONE");
         Ok(())
     }
 
@@ -338,7 +332,6 @@ impl DNSRecord {
                 })
             },
             QueryType::UNKNOWN(_) => {
-                println!("LEN to SKIP: {}", len);
                 buf.step(len as usize); // Skip the data length of this particular record type 
                 Ok(DNSRecord::UNKNOWN {
                     name: domain,
@@ -402,14 +395,11 @@ impl DNSPacket {
         result.header.read(buf)?;
         for _ in 0..result.header.q_count {
             let question = DNSQuestion::read(buf)?;
-            println!("Question Parsed: {:#?}", question);
             result.questions.push(question);
         }
 
-        for i in 0..result.header.an_count {
+        for _ in 0..result.header.an_count {
             let record = DNSRecord::read(buf)?;
-            println!("{}th answer: {:#?}", i, record);
-            println!("Buffer position : {}", buf.pos());
             result.answers.push(record);
         }
 
