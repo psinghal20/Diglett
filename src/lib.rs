@@ -3,8 +3,8 @@ use std::net::Ipv4Addr;
 
 #[derive(Clone)]
 pub struct PacketBuffer {
-    buf: [u8; 512],
-    pos: usize,
+    pub buf: [u8; 512],
+    pub pos: usize,
 }
 
 impl PacketBuffer {
@@ -20,6 +20,7 @@ impl PacketBuffer {
     }
 
     pub fn step(&mut self, steps: usize) {
+        println!("STEPS: {}", steps);
         self.pos += steps;
     }
 
@@ -29,7 +30,7 @@ impl PacketBuffer {
 
     pub fn read(&mut self) -> Result<u8> {
         if self.pos >= 512 {
-            return Err(eyre!("Buffer position exceeded"));
+            return Err(eyre!("Buffer position exceeded, pos: {}", self.pos));
         }
         let result = self.buf[self.pos];
         self.pos += 1;
@@ -38,7 +39,7 @@ impl PacketBuffer {
 
     pub fn get(&self, pos: usize) -> Result<u8> {
         if pos >= 512 {
-            return Err(eyre!("Buffer position exceeded"));
+            return Err(eyre!("GET: Buffer position exceeded, pos: {}", self.pos));
         }
         let res = self.buf[pos];
         Ok(res)
@@ -46,7 +47,7 @@ impl PacketBuffer {
 
     pub fn get_range(&self, pos: usize, len: usize) -> Result<&[u8]> {
         if pos >= 512 {
-            return Err(eyre!("Buffer position exeeded!"));
+            return Err(eyre!("Buffer position exceeded, pos: {}", self.pos));
         }
         let res = &self.buf[pos..pos+len];
         Ok(res)
@@ -63,9 +64,12 @@ impl PacketBuffer {
     }
 
     pub fn read_qname(&mut self, output: &mut String) -> Result<()> {
+        println!("Entered q_name");
         let mut pos = self.pos();
         let mut jump = false;
         let mut delim = "";
+        println!("POS: {}", pos);
+
         loop {
             let len = self.get(pos)?;
             if(len & 0xC0) == 0xC0 {
@@ -75,12 +79,14 @@ impl PacketBuffer {
                 }
 
                 let byte2 = self.get(pos+1)? as u16;
-                let offset = (len as u16 ^ 0xC0) << 8 | byte2;
+                let offset = ((len as u16) ^ 0xC0) << 8 | byte2;
                 pos = offset as usize;
+                println!("Offset: {}", pos);
                 jump = true;
             } else {
                 pos += 1; // move to next byte
                 if len == 0 {
+                    println!("OUTPUT STRING LABLE: {}", output);
                     break;
                     // Null length means end of label
                 }
@@ -91,12 +97,14 @@ impl PacketBuffer {
 
                 delim = "."; //After initial null delimiter use, we add period as delimiter
                 pos += len as usize;
+                // println!("LEN: {}", len);
             }
         }
 
         if !jump {
             self.seek(pos);
         }
+        println!("DONE");
         Ok(())
     }
 
@@ -160,6 +168,7 @@ impl RCode {
     }
 }
 
+#[derive(Debug)]
 pub struct DNSHeader {
     pub id: u16,
     pub query_response: bool,
@@ -254,9 +263,10 @@ impl QueryType {
     }
 }
 
+#[derive(Debug)]
 pub struct DNSQuestion {
-    name: String,
-    q_type: QueryType,
+    pub name: String,
+    pub q_type: QueryType,
 }
 
 impl DNSQuestion {
@@ -286,20 +296,21 @@ impl DNSQuestion {
     }
 }
 
+#[derive(Debug)]
 pub enum DNSRecord {
     UNKNOWN {
         name: String,
         q_type: QueryType,
         class: u16,
         ttl: u32,
-        len: u32
+        len: u16
     },
     A {
         name: String,
         q_type: QueryType,
         class: u16,
         ttl: u32,
-        len: u32,
+        len: u16,
         addr: Ipv4Addr,
     }
 }
@@ -311,7 +322,7 @@ impl DNSRecord {
         let q_type = QueryType::from_num(buf.read_u16()?);
         let class = buf.read_u16()?;
         let ttl = buf.read_u32()?;
-        let len = buf.read_u32()?;
+        let len = buf.read_u16()?;
         match q_type {
             QueryType::A => {
                 // We have a A record query
@@ -327,6 +338,7 @@ impl DNSRecord {
                 })
             },
             QueryType::UNKNOWN(_) => {
+                println!("LEN to SKIP: {}", len);
                 buf.step(len as usize); // Skip the data length of this particular record type 
                 Ok(DNSRecord::UNKNOWN {
                     name: domain,
@@ -353,7 +365,7 @@ impl DNSRecord {
                 buf.write_u16(q_type.to_num())?;
                 buf.write_u16(class)?;
                 buf.write_u32(ttl)?;
-                buf.write_u32(len)?;
+                buf.write_u16(len)?;
                 for octet in addr.octets().iter() {
                     buf.write(*octet)?;
                 }
@@ -366,6 +378,7 @@ impl DNSRecord {
     }
 }
 
+#[derive(Debug)]
 pub struct DNSPacket {
     pub header: DNSHeader,
     pub questions: Vec<DNSQuestion>,
@@ -375,7 +388,7 @@ pub struct DNSPacket {
 }
 
 impl DNSPacket {
-    fn new() -> DNSPacket {
+    pub fn new() -> DNSPacket {
         DNSPacket {
             header: DNSHeader::new(),
             questions: Vec::new(),
@@ -384,15 +397,20 @@ impl DNSPacket {
             addtional: Vec::new(),
         }
     }
-    fn from_buffer(buf: &mut PacketBuffer) -> Result<DNSPacket> {
+    pub fn from_buffer(buf: &mut PacketBuffer) -> Result<DNSPacket> {
         let mut result = DNSPacket::new();
         result.header.read(buf)?;
         for _ in 0..result.header.q_count {
-            result.questions.push(DNSQuestion::read(buf)?);
+            let question = DNSQuestion::read(buf)?;
+            println!("Question Parsed: {:#?}", question);
+            result.questions.push(question);
         }
 
-        for _ in 0..result.header.an_count {
-            result.answers.push(DNSRecord::read(buf)?);
+        for i in 0..result.header.an_count {
+            let record = DNSRecord::read(buf)?;
+            println!("{}th answer: {:#?}", i, record);
+            println!("Buffer position : {}", buf.pos());
+            result.answers.push(record);
         }
 
         for _ in 0..result.header.ns_count {
