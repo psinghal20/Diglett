@@ -99,6 +99,42 @@ impl PacketBuffer {
         }
         Ok(())
     }
+
+    pub fn write(&mut self, val: u8) -> Result<()> {
+        if self.pos >= 512 {
+            return Err(eyre!("Buffer Limit Exceeded!"));
+        }
+        self.buf[self.pos] = val;
+        self.pos += 1;
+        Ok(())
+    }
+
+    pub fn write_u16(&mut self, val: u16) -> Result<()> {
+        self.write((val >> 8) as u8)?;
+        self.write((val & 0xFF) as u8)?;
+        Ok(())
+    }
+
+    pub fn write_u32(&mut self, val: u32) -> Result<()> {
+        self.write_u16((val >> 16) as u16)?;
+        self.write_u16((val & 0xFFFF) as u16)?;
+        Ok(())
+    }
+
+    pub fn write_qname(&mut self, qname: &str) -> Result<()> {
+        for label in qname.split('.') {
+            let len = label.len();
+            if len > 63 {
+                return Err(eyre!("Length exceeds 63 characters"));
+            }
+            self.write(len as u8)?;
+            for byte in label.bytes() {
+                self.write(byte)?;
+            }
+        }
+        self.write(0)?; // Null length to signify end of name
+        Ok(())
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -177,6 +213,24 @@ impl DNSHeader {
         self.ad_count = buf.read_u16()?;
         Ok(())
     }
+
+    pub fn write(&self, buf: &mut PacketBuffer) -> Result<()> {
+        buf.write_u16(self.id)?;
+        buf.write_u16(((self.query_response as u16) << 15)
+            | ((self.opcode as u16) << 11)
+            | ((self.auth_answer as u16) << 10)
+            | ((self.truncated_msg as u16) << 9)
+            | ((self.recur_desired as u16) << 8)
+            | ((self.recur_available as u16) << 7)
+            | ((self.z_res as u16) << 4)
+            | self.res_code as u16
+        )?;
+        buf.write_u16(self.q_count)?;
+        buf.write_u16(self.an_count)?;
+        buf.write_u16(self.ns_count)?;
+        buf.write_u16(self.ad_count)?;
+        Ok(())
+    }
 }
 
 #[derive(PartialEq,Eq,Debug,Clone,Hash,Copy)]
@@ -206,7 +260,7 @@ pub struct DNSQuestion {
 }
 
 impl DNSQuestion {
-    fn new(name: String, q_type: QueryType) -> Self {
+    pub fn new(name: String, q_type: QueryType) -> Self {
         Self {
             name,
             q_type,
@@ -222,6 +276,13 @@ impl DNSQuestion {
             name,
             q_type,
         })
+    }
+
+    pub fn write(&self, buf: &mut PacketBuffer) -> Result<()> {
+        buf.write_qname(&self.name)?;
+        buf.write_u16(self.q_type.to_num())?;
+        buf.write_u16(1 as u16)?;
+        Ok(())
     }
 }
 
@@ -244,7 +305,7 @@ pub enum DNSRecord {
 }
 
 impl DNSRecord {
-    fn read(buf: &mut PacketBuffer) -> Result<DNSRecord> {
+    pub fn read(buf: &mut PacketBuffer) -> Result<DNSRecord> {
         let mut domain = String::new();
         buf.read_qname(&mut domain)?;
         let q_type = QueryType::from_num(buf.read_u16()?);
@@ -276,6 +337,32 @@ impl DNSRecord {
                 })
             }
         }
+    }
+
+    pub fn write(&self, buf: &mut PacketBuffer) -> Result<()> {
+        match *self {
+            DNSRecord::A {
+                ref name,
+                q_type,
+                class,
+                ttl,
+                len,
+                ref addr
+            } => {
+                buf.write_qname(&name)?;
+                buf.write_u16(q_type.to_num())?;
+                buf.write_u16(class)?;
+                buf.write_u32(ttl)?;
+                buf.write_u32(len)?;
+                for octet in addr.octets().iter() {
+                    buf.write(*octet)?;
+                }
+            }
+            DNSRecord::UNKNOWN { .. } => {
+                println!("SKipping unknown record!");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -316,5 +403,27 @@ impl DNSPacket {
             result.addtional.push(DNSRecord::read(buf)?);
         }
         Ok(result)
+    }
+
+    pub fn add_question(&mut self, question: DNSQuestion) {
+        self.questions.push(question);
+        self.header.q_count += 1;
+    }
+
+    pub fn write(&mut self, buf: &mut PacketBuffer) -> Result<()> {
+        self.header.write(buf)?;
+        for question in &self.questions {
+            question.write(buf)?;
+        }
+        for answer in &self.answers {
+            answer.write(buf)?;
+        }
+        for auth in &self.authority {
+            auth.write(buf)?;
+        }
+        for record in &self.addtional {
+            record.write(buf)?;
+        }
+        Ok(())
     }
 }
