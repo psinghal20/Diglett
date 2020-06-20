@@ -602,6 +602,10 @@ impl DNSPacket {
     }
 
     pub fn write(&mut self, buf: &mut PacketBuffer) -> Result<()> {
+        self.header.q_count = self.questions.len() as u16;
+        self.header.an_count = self.answers.len() as u16;
+        self.header.ns_count = self.authority.len() as u16;
+        self.header.ad_count = self.addtional.len() as u16;
         self.header.write(buf)?;
         for question in &self.questions {
             question.write(buf)?;
