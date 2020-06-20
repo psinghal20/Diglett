@@ -621,4 +621,52 @@ impl DNSPacket {
         }
         Ok(())
     }
+
+    pub fn get_random_a(&self) -> Option<Ipv4Addr> {
+        self.answers
+            .iter()
+            .filter_map(|record| {
+                match record {
+                    DNSRecord::A { addr, .. } => Some(*addr),
+                    _ => None,
+                }
+            })
+            .next()
+    }
+
+    pub fn get_ns<'a>(&'a self, qname: &'a str) -> impl Iterator<Item = (&'a str, &'a str)> {
+        self.authority
+            .iter()
+            .filter_map(|record| {
+                match record {
+                    DNSRecord::NS { 
+                        name,
+                        host,
+                        ..
+                    } => Some((name.as_str(), host.as_str())),
+                    _ => None,
+                }
+            })
+            .filter(move |(name, _)| qname.ends_with(*name))
+    }
+
+    pub fn get_resolved_ns(&self, qname: &str) -> Option<Ipv4Addr> {
+        self.get_ns(qname)
+            .flat_map(|(_, host)| {
+                self.addtional
+                    .iter()
+                    .filter_map(move |record| match record {
+                        DNSRecord::A { name, addr, .. } if name == host => Some(addr),
+                        _ => None,
+                    })
+            })
+            .map(|addr| *addr)
+            .next()
+    }
+
+    pub fn get_unresolved_ns<'a>(&'a self, qname: &'a str) -> Option<&'a str> {
+        self.get_ns(qname)
+            .map(|(_, host)| host)
+            .next()
+    }
 }

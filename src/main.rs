@@ -1,10 +1,8 @@
 use diglett::*;
-use std::net::UdpSocket;
+use std::net::{UdpSocket, Ipv4Addr};
 use eyre::Result;
 
-fn lookup(qname: &str, q_type: QueryType) -> Result<DNSPacket> {
-    let server = ("8.8.8.8", 53);
-
+fn lookup(qname: &str, q_type: QueryType, server: (Ipv4Addr, u16)) -> Result<DNSPacket> {
     let socket = UdpSocket::bind(("0.0.0.0", 9999))?;
     let mut dns_packet = DNSPacket::new();
     dns_packet.header.id = 6996;
@@ -38,7 +36,7 @@ fn handle_request(socket: &UdpSocket) -> Result<()> {
     if let Some(question) = request_packet.questions.pop() {
         println!("Recieved Question: {:?}", question);
 
-        if let Ok(result) = lookup(&question.name, question.q_type) {
+        if let Ok(result) = recursive_lookup(&question.name, question.q_type) {
             res_packet.questions.push(question);
             res_packet.header.res_code = result.header.res_code;
 
@@ -69,6 +67,44 @@ fn handle_request(socket: &UdpSocket) -> Result<()> {
     Ok(())
 }
 
+fn recursive_lookup(qname: &str, q_type: QueryType) -> Result<DNSPacket> {
+    let mut ns = "198.41.0.4".parse::<Ipv4Addr>()?;
+
+    loop {
+        println!("attempting lookup of {:?} {} with ns {}", q_type, qname, ns);
+
+        let server = (ns.clone(), 53);
+
+        let response = lookup(qname, q_type, server)?;
+
+        if !response.answers.is_empty() && response.header.res_code == RCode::NOERROR {
+            return Ok(response);
+        }
+
+        if response.header.res_code == RCode::NXDOMAIN {
+            return Ok(response);
+        }
+
+        if let Some(new_ns) = response.get_resolved_ns(qname) {
+            ns = new_ns;
+            continue;
+        }
+
+        let new_ns_name = match response.get_unresolved_ns(qname) {
+            Some(name) => name,
+            None => return Ok(response),
+        };
+
+        let recursive_response = recursive_lookup(new_ns_name, QueryType::A)?;
+
+        if let Some(new_ns) = recursive_response.get_random_a() {
+            ns = new_ns;
+        } else {
+            return Ok(response);
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", 2053))?;
 
@@ -80,6 +116,4 @@ fn main() -> Result<()> {
             Err(e) => eprintln!("An error occured: {}", e),
         }
     }
-    
-    Ok(())
 }
