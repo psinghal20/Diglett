@@ -3,7 +3,7 @@ use std::net::UdpSocket;
 use eyre::Result;
 
 fn main() -> Result<()> {
-    let qname = "psinghal20.github.io".to_string();
+    let qname = "psinghal20.co".to_string();
     let q_type = QueryType::A;
     let server = ("8.8.8.8", 53);
 
