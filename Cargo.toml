@@ -8,3 +8,5 @@ edition = "2018"
 
 [dependencies]
 eyre = "0.4.3"
+tokio = { version = "0.2", features = ["full"] }
+futures = "0.3"
