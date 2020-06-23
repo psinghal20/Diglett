@@ -168,9 +168,9 @@ impl ArrayBuffer {
     }
 }
 
-struct VecBuffer {
-    buf: Vec<u8>,
-    pos: usize
+pub struct VecBuffer {
+    pub buf: Vec<u8>,
+    pub pos: usize
 }
 
 impl PacketBufferTrait for VecBuffer {
@@ -225,10 +225,7 @@ impl PacketBufferTrait for VecBuffer {
     }
 
     fn write(&mut self, val: u8) -> Result<()> {
-        if self.pos >= self.buf.len() {
-            return Err(eyre!("Buffer Limit Exceeded!"));
-        }
-        self.buf[self.pos] = val;
+        self.buf.push(val);
         self.pos += 1;
         Ok(())
     }

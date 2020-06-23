@@ -63,7 +63,7 @@ impl DNSHeader {
         }
     }
 
-    pub fn read(&mut self, buf: &mut ArrayBuffer) -> Result<()> {
+    pub fn read<T: PacketBufferTrait>(&mut self, buf: &mut T) -> Result<()> {
         self.id = buf.read_u16()?;
         let flags = buf.read_u16()?;
         self.query_response = (flags & (1 << 15)) > 0;
@@ -81,7 +81,7 @@ impl DNSHeader {
         Ok(())
     }
 
-    pub fn write(&self, buf: &mut ArrayBuffer) -> Result<()> {
+    pub fn write<T: PacketBufferTrait>(&self, buf: &mut T) -> Result<()> {
         buf.write_u16(self.id)?;
         buf.write_u16(((self.query_response as u16) << 15)
             | ((self.opcode as u16) << 11)
@@ -147,7 +147,7 @@ impl DNSQuestion {
         }
     }
 
-    pub fn read(buf: &mut ArrayBuffer) -> Result<DNSQuestion>{
+    pub fn read<T: PacketBufferTrait>(buf: &mut T) -> Result<DNSQuestion>{
         let mut name = String::new();
         buf.read_qname(&mut name)?;
         let q_type = QueryType::from_num(buf.read_u16()?);
@@ -158,7 +158,7 @@ impl DNSQuestion {
         })
     }
 
-    pub fn write(&self, buf: &mut ArrayBuffer) -> Result<()> {
+    pub fn write<T: PacketBufferTrait>(&self, buf: &mut T) -> Result<()> {
         buf.write_qname(&self.name)?;
         buf.write_u16(self.q_type.to_num())?;
         buf.write_u16(1 as u16)?;
@@ -219,7 +219,7 @@ pub enum DNSRecord {
 }
 
 impl DNSRecord {
-    pub fn read(buf: &mut ArrayBuffer) -> Result<DNSRecord> {
+    pub fn read<T: PacketBufferTrait>(buf: &mut T) -> Result<DNSRecord> {
         let mut domain = String::new();
         buf.read_qname(&mut domain)?;
         let q_type = QueryType::from_num(buf.read_u16()?);
@@ -316,7 +316,7 @@ impl DNSRecord {
         }
     }
 
-    pub fn write(&self, buf: &mut ArrayBuffer) -> Result<()> {
+    pub fn write<T: PacketBufferTrait>(&self, buf: &mut T) -> Result<()> {
         match *self {
             DNSRecord::A {
                 ref name,
@@ -426,7 +426,7 @@ impl DNSPacket {
             addtional: Vec::new(),
         }
     }
-    pub fn from_buffer(buf: &mut ArrayBuffer) -> Result<DNSPacket> {
+    pub fn from_buffer<T: PacketBufferTrait>(buf: &mut T) -> Result<DNSPacket> {
         let mut result = DNSPacket::new();
         result.header.read(buf)?;
         for _ in 0..result.header.q_count {
@@ -454,7 +454,7 @@ impl DNSPacket {
         self.header.q_count += 1;
     }
 
-    pub fn write(&mut self, buf: &mut ArrayBuffer) -> Result<()> {
+    pub fn write<T: PacketBufferTrait>(&mut self, buf: &mut T) -> Result<()> {
         self.header.q_count = self.questions.len() as u16;
         self.header.an_count = self.answers.len() as u16;
         self.header.ns_count = self.authority.len() as u16;
