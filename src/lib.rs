@@ -1,14 +1,14 @@
 use eyre::{eyre, Result};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-trait PacketBufferTrait {
+pub trait PacketBufferTrait {
     fn read(&mut self) -> Result<u8>;
     fn get(&self, pos: usize) -> Result<u8>;
     fn get_range(&self, pos: usize, len: usize) -> Result<&[u8]>;
     fn set(&mut self, pos: usize, val: u8) -> Result<()>;
     fn pos(&self) -> usize;
-    fn seek(&self, pos: usize) -> Result<()>;
-    fn step(&self, steps: usize) -> Result<()>;
+    fn seek(&mut self, pos: usize) -> Result<()>;
+    fn step(&mut self, steps: usize) -> Result<()>;
     fn write(&mut self, val: u8) -> Result<()>;
 
     fn read_u16(&mut self) -> Result<u16> {
@@ -91,32 +91,33 @@ trait PacketBufferTrait {
 }
 
 #[derive(Clone)]
-pub struct PacketBuffer {
+pub struct ArrayBuffer {
     pub buf: [u8; 512],
     pub pos: usize,
 }
 
-impl PacketBuffer {
-    pub fn new() -> PacketBuffer {
-        return PacketBuffer {
-            buf: [0; 512],
-            pos: 0,
-        };
-    }
-
-    pub fn pos(&self) -> usize {
+impl PacketBufferTrait for ArrayBuffer {
+    fn pos(&self) -> usize {
         self.pos
     }
 
-    pub fn step(&mut self, steps: usize) {
+    fn step(&mut self, steps: usize) -> Result<()>{
+        if self.pos + steps > 512 {
+            return Err(eyre!("Buffer position exceeded, pos: {}", self.pos));
+        }
         self.pos += steps;
+        Ok(())
     }
 
-    pub fn seek(&mut self, pos: usize) {
+    fn seek(&mut self, pos: usize) -> Result<()> {
+        if pos > 512 {
+            return Err(eyre!("Buffer position exceeded, pos: {}", pos));
+        }
         self.pos = pos;
+        Ok(())
     }
 
-    pub fn read(&mut self) -> Result<u8> {
+    fn read(&mut self) -> Result<u8> {
         if self.pos >= 512 {
             return Err(eyre!("Buffer position exceeded, pos: {}", self.pos));
         }
@@ -125,7 +126,7 @@ impl PacketBuffer {
         Ok(result)
     }
 
-    pub fn get(&self, pos: usize) -> Result<u8> {
+    fn get(&self, pos: usize) -> Result<u8> {
         if pos >= 512 {
             return Err(eyre!("GET: Buffer position exceeded, pos: {}", self.pos));
         }
@@ -133,7 +134,7 @@ impl PacketBuffer {
         Ok(res)
     }
 
-    pub fn get_range(&self, pos: usize, len: usize) -> Result<&[u8]> {
+    fn get_range(&self, pos: usize, len: usize) -> Result<&[u8]> {
         if pos >= 512 {
             return Err(eyre!("Buffer position exceeded, pos: {}", self.pos));
         }
@@ -141,68 +142,12 @@ impl PacketBuffer {
         Ok(res)
     }
 
-    pub fn set(&mut self, pos: usize, val: u8) -> Result<()> {
+    fn set(&mut self, pos: usize, val: u8) -> Result<()> {
         self.buf[pos] = val;
         Ok(())
     }
 
-    pub fn set_u16(&mut self, pos: usize, val: u16) -> Result<()> {
-        self.set(pos, (val >> 8) as u8)?;
-        self.set(pos+1, val as u8)?;
-        Ok(())
-    }
-
-    pub fn read_u16(&mut self) -> Result<u16> {
-        let res = ((self.read()? as u16) << 8) | (self.read()? as u16);
-        Ok(res)
-    }
-
-    pub fn read_u32(&mut self) -> Result<u32> {
-        let res = ((self.read_u16()? as u32) << 16 ) | (self.read_u16()? as u32);
-        Ok(res)
-    }
-
-    pub fn read_qname(&mut self, output: &mut String) -> Result<()> {
-        let mut pos = self.pos();
-        let mut jump = false;
-        let mut delim = "";
-
-        loop {
-            let len = self.get(pos)?;
-            if(len & 0xC0) == 0xC0 {
-                // The first two bits are 1 so we need to jump
-                if !jump {
-                    self.seek(pos + 2);
-                }
-
-                let byte2 = self.get(pos+1)? as u16;
-                let offset = ((len as u16) ^ 0xC0) << 8 | byte2;
-                pos = offset as usize;
-                jump = true;
-            } else {
-                pos += 1; // move to next byte
-                if len == 0 {
-                    break;
-                    // Null length means end of label
-                }
-                output.push_str(delim);
-
-                let str_buf = self.get_range(pos, len as usize)?;
-                output.push_str(&String::from_utf8_lossy(str_buf).to_lowercase());
-
-                delim = "."; //After initial null delimiter use, we add period as delimiter
-                pos += len as usize;
-                // println!("LEN: {}", len);
-            }
-        }
-
-        if !jump {
-            self.seek(pos);
-        }
-        Ok(())
-    }
-
-    pub fn write(&mut self, val: u8) -> Result<()> {
+    fn write(&mut self, val: u8) -> Result<()> {
         if self.pos >= 512 {
             return Err(eyre!("Buffer Limit Exceeded!"));
         }
@@ -211,31 +156,14 @@ impl PacketBuffer {
         Ok(())
     }
 
-    pub fn write_u16(&mut self, val: u16) -> Result<()> {
-        self.write((val >> 8) as u8)?;
-        self.write((val & 0xFF) as u8)?;
-        Ok(())
-    }
+}
 
-    pub fn write_u32(&mut self, val: u32) -> Result<()> {
-        self.write_u16((val >> 16) as u16)?;
-        self.write_u16((val & 0xFFFF) as u16)?;
-        Ok(())
-    }
-
-    pub fn write_qname(&mut self, qname: &str) -> Result<()> {
-        for label in qname.split('.') {
-            let len = label.len();
-            if len > 63 {
-                return Err(eyre!("Length exceeds 63 characters"));
-            }
-            self.write(len as u8)?;
-            for byte in label.bytes() {
-                self.write(byte)?;
-            }
-        }
-        self.write(0)?; // Null length to signify end of name
-        Ok(())
+impl ArrayBuffer {
+    pub fn new() -> ArrayBuffer {
+        return ArrayBuffer {
+            buf: [0; 512],
+            pos: 0,
+        };
     }
 }
 
@@ -299,7 +227,7 @@ impl DNSHeader {
         }
     }
 
-    pub fn read(&mut self, buf: &mut PacketBuffer) -> Result<()> {
+    pub fn read(&mut self, buf: &mut ArrayBuffer) -> Result<()> {
         self.id = buf.read_u16()?;
         let flags = buf.read_u16()?;
         self.query_response = (flags & (1 << 15)) > 0;
@@ -317,7 +245,7 @@ impl DNSHeader {
         Ok(())
     }
 
-    pub fn write(&self, buf: &mut PacketBuffer) -> Result<()> {
+    pub fn write(&self, buf: &mut ArrayBuffer) -> Result<()> {
         buf.write_u16(self.id)?;
         buf.write_u16(((self.query_response as u16) << 15)
             | ((self.opcode as u16) << 11)
@@ -383,7 +311,7 @@ impl DNSQuestion {
         }
     }
 
-    pub fn read(buf: &mut PacketBuffer) -> Result<DNSQuestion>{
+    pub fn read(buf: &mut ArrayBuffer) -> Result<DNSQuestion>{
         let mut name = String::new();
         buf.read_qname(&mut name)?;
         let q_type = QueryType::from_num(buf.read_u16()?);
@@ -394,7 +322,7 @@ impl DNSQuestion {
         })
     }
 
-    pub fn write(&self, buf: &mut PacketBuffer) -> Result<()> {
+    pub fn write(&self, buf: &mut ArrayBuffer) -> Result<()> {
         buf.write_qname(&self.name)?;
         buf.write_u16(self.q_type.to_num())?;
         buf.write_u16(1 as u16)?;
@@ -455,7 +383,7 @@ pub enum DNSRecord {
 }
 
 impl DNSRecord {
-    pub fn read(buf: &mut PacketBuffer) -> Result<DNSRecord> {
+    pub fn read(buf: &mut ArrayBuffer) -> Result<DNSRecord> {
         let mut domain = String::new();
         buf.read_qname(&mut domain)?;
         let q_type = QueryType::from_num(buf.read_u16()?);
@@ -540,7 +468,7 @@ impl DNSRecord {
                 })
             }
             QueryType::UNKNOWN(_) => {
-                buf.step(len as usize); // Skip the data length of this particular record type 
+                buf.step(len as usize)?; // Skip the data length of this particular record type 
                 Ok(DNSRecord::UNKNOWN {
                     name: domain,
                     q_type: q_type,
@@ -552,7 +480,7 @@ impl DNSRecord {
         }
     }
 
-    pub fn write(&self, buf: &mut PacketBuffer) -> Result<()> {
+    pub fn write(&self, buf: &mut ArrayBuffer) -> Result<()> {
         match *self {
             DNSRecord::A {
                 ref name,
@@ -662,7 +590,7 @@ impl DNSPacket {
             addtional: Vec::new(),
         }
     }
-    pub fn from_buffer(buf: &mut PacketBuffer) -> Result<DNSPacket> {
+    pub fn from_buffer(buf: &mut ArrayBuffer) -> Result<DNSPacket> {
         let mut result = DNSPacket::new();
         result.header.read(buf)?;
         for _ in 0..result.header.q_count {
@@ -690,7 +618,7 @@ impl DNSPacket {
         self.header.q_count += 1;
     }
 
-    pub fn write(&mut self, buf: &mut PacketBuffer) -> Result<()> {
+    pub fn write(&mut self, buf: &mut ArrayBuffer) -> Result<()> {
         self.header.q_count = self.questions.len() as u16;
         self.header.an_count = self.answers.len() as u16;
         self.header.ns_count = self.authority.len() as u16;
