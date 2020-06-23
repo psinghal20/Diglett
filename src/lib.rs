@@ -1,6 +1,95 @@
 use eyre::{eyre, Result};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+trait PacketBufferTrait {
+    fn read(&mut self) -> Result<u8>;
+    fn get(&self, pos: usize) -> Result<u8>;
+    fn get_range(&self, pos: usize, len: usize) -> Result<&[u8]>;
+    fn set(&mut self, pos: usize, val: u8) -> Result<()>;
+    fn pos(&self) -> usize;
+    fn seek(&self, pos: usize) -> Result<()>;
+    fn step(&self, steps: usize) -> Result<()>;
+    fn write(&mut self, val: u8) -> Result<()>;
+
+    fn read_u16(&mut self) -> Result<u16> {
+        let res = ((self.read()? as u16) << 8) | (self.read()? as u16);
+        Ok(res)
+    }
+
+    fn read_u32(&mut self) -> Result<u32> {
+        let res = ((self.read_u16()? as u32) << 16 ) | (self.read_u16()? as u32);
+        Ok(res)
+    }
+
+    fn write_u16(&mut self, val: u16) -> Result<()> {
+        self.write((val >> 8) as u8)?;
+        self.write((val & 0xFF) as u8)?;
+        Ok(())
+    }
+
+    fn write_u32(&mut self, val: u32) -> Result<()> {
+        self.write_u16((val >> 16) as u16)?;
+        self.write_u16((val & 0xFFFF) as u16)?;
+        Ok(())
+    }
+
+
+    fn read_qname(&mut self, output: &mut String) -> Result<()> {
+        let mut pos = self.pos();
+        let mut jump = false;
+        let mut delim = "";
+
+        loop {
+            let len = self.get(pos)?;
+            if(len & 0xC0) == 0xC0 {
+                // The first two bits are 1 so we need to jump
+                if !jump {
+                    self.seek(pos + 2)?;
+                }
+
+                let byte2 = self.get(pos+1)? as u16;
+                let offset = ((len as u16) ^ 0xC0) << 8 | byte2;
+                pos = offset as usize;
+                jump = true;
+            } else {
+                pos += 1; // move to next byte
+                if len == 0 {
+                    break;
+                    // Null length means end of label
+                }
+                output.push_str(delim);
+
+                let str_buf = self.get_range(pos, len as usize)?;
+                output.push_str(&String::from_utf8_lossy(str_buf).to_lowercase());
+
+                delim = "."; //After initial null delimiter use, we add period as delimiter
+                pos += len as usize;
+                // println!("LEN: {}", len);
+            }
+        }
+
+        if !jump {
+            self.seek(pos)?;
+        }
+        Ok(())
+    }
+
+    fn write_qname(&mut self, qname: &str) -> Result<()> {
+        for label in qname.split('.') {
+            let len = label.len();
+            if len > 63 {
+                return Err(eyre!("Length exceeds 63 characters"));
+            }
+            self.write(len as u8)?;
+            for byte in label.bytes() {
+                self.write(byte)?;
+            }
+        }
+        self.write(0)?; // Null length to signify end of name
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct PacketBuffer {
     pub buf: [u8; 512],
