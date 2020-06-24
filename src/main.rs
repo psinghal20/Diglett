@@ -1,10 +1,10 @@
+use buffer::{ArrayBuffer, PacketBufferTrait, VecBuffer};
 use diglett::*;
-use buffer::{PacketBufferTrait, ArrayBuffer, VecBuffer};
+use eyre::Result;
+use futures::future::BoxFuture;
 use std::net;
 use std::net::{Ipv4Addr, SocketAddr};
-use tokio::net::{UdpSocket, TcpListener, TcpStream};
-use futures::future::BoxFuture;
-use eyre::Result;
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 async fn udp_lookup(qname: &str, q_type: QueryType, server: (Ipv4Addr, u16)) -> Result<DNSPacket> {
     let mut socket = UdpSocket::bind(("0.0.0.0", 9999)).await?;
@@ -16,7 +16,9 @@ async fn udp_lookup(qname: &str, q_type: QueryType, server: (Ipv4Addr, u16)) -> 
 
     dns_packet.write(&mut req_buf)?;
 
-    socket.send_to(&req_buf.buf[0..req_buf.pos()], server).await?;
+    socket
+        .send_to(&req_buf.buf[0..req_buf.pos()], server)
+        .await?;
 
     let mut res_buf = ArrayBuffer::new();
     socket.recv_from(&mut res_buf.buf).await?;
@@ -40,7 +42,11 @@ async fn tcp_lookup(qname: &str, q_type: QueryType, server: (Ipv4Addr, u16)) -> 
     Ok(res_packet)
 }
 
-fn recursive_lookup(qname: &'_ str, q_type: QueryType, protocol: ReqProtocol) -> BoxFuture<'_, Result<DNSPacket>> {
+fn recursive_lookup(
+    qname: &'_ str,
+    q_type: QueryType,
+    protocol: ReqProtocol,
+) -> BoxFuture<'_, Result<DNSPacket>> {
     Box::pin(async move {
         let mut ns = "198.41.0.4".parse::<Ipv4Addr>()?;
 
@@ -51,7 +57,7 @@ fn recursive_lookup(qname: &'_ str, q_type: QueryType, protocol: ReqProtocol) ->
 
             let response = match protocol {
                 ReqProtocol::UDP => udp_lookup(qname, q_type, server).await?,
-                ReqProtocol::TCP => tcp_lookup(qname, q_type, server).await?
+                ReqProtocol::TCP => tcp_lookup(qname, q_type, server).await?,
             };
 
             if !response.answers.is_empty() && response.header.res_code == RCode::NOERROR {
@@ -86,7 +92,7 @@ fn recursive_lookup(qname: &'_ str, q_type: QueryType, protocol: ReqProtocol) ->
 #[derive(Debug, Copy, Clone)]
 enum ReqProtocol {
     UDP,
-    TCP
+    TCP,
 }
 
 #[derive(Debug)]
@@ -101,7 +107,7 @@ impl DNSUdpServer {
         let tokio_socket = UdpSocket::from_std(std_socket.try_clone()?)?;
         Ok(DNSUdpServer {
             tokio_socket,
-            std_socket
+            std_socket,
         })
     }
 
@@ -118,14 +124,20 @@ impl DNSUdpServer {
             };
             let std_socket_clone = self.std_socket.try_clone()?;
             tokio::spawn(async move {
-                if let Err(err) = DNSUdpServer::handle_request(std_socket_clone, req_buffer, src).await {
+                if let Err(err) =
+                    DNSUdpServer::handle_request(std_socket_clone, req_buffer, src).await
+                {
                     println!("Failed to handle request from src {} : {}", src, err);
                 }
             });
         }
     }
 
-    async fn handle_request(socket: net::UdpSocket, mut req_buffer: ArrayBuffer, src: SocketAddr) -> Result<()>{
+    async fn handle_request(
+        socket: net::UdpSocket,
+        mut req_buffer: ArrayBuffer,
+        src: SocketAddr,
+    ) -> Result<()> {
         let mut request_packet = DNSPacket::from_buffer(&mut req_buffer)?;
 
         let mut res_packet = DNSPacket::new();
@@ -137,7 +149,9 @@ impl DNSUdpServer {
         if let Some(question) = request_packet.questions.pop() {
             println!("Recieved Question: {:?}", question);
 
-            if let Ok(result) = recursive_lookup(&question.name, question.q_type, ReqProtocol::UDP).await {
+            if let Ok(result) =
+                recursive_lookup(&question.name, question.q_type, ReqProtocol::UDP).await
+            {
                 res_packet.questions.push(question);
                 res_packet.header.res_code = result.header.res_code;
 
@@ -167,7 +181,8 @@ impl DNSUdpServer {
             if let Err(e) = socket.send_to(&res_buffer.buf[0..len], src) {
                 println!("Failed to send response to {} : {}", src, e);
             }
-        }).await?;
+        })
+        .await?;
         Ok(())
     }
 }
@@ -179,7 +194,7 @@ struct DNSTcpServer {
 impl DNSTcpServer {
     async fn new(addr: (&str, u16)) -> Result<DNSTcpServer> {
         Ok(DNSTcpServer {
-            listener: TcpListener::bind(addr).await?
+            listener: TcpListener::bind(addr).await?,
         })
     }
 
@@ -188,7 +203,11 @@ impl DNSTcpServer {
             let (mut socket, _) = self.listener.accept().await?;
             tokio::spawn(async move {
                 if let Err(err) = DNSTcpServer::handle_connection(&mut socket).await {
-                    eprintln!("Failed to handle request from src {} : {}", socket.peer_addr().unwrap(), err);
+                    eprintln!(
+                        "Failed to handle request from src {} : {}",
+                        socket.peer_addr().unwrap(),
+                        err
+                    );
                 }
             });
         }
@@ -208,7 +227,9 @@ impl DNSTcpServer {
         if let Some(question) = request_packet.questions.pop() {
             println!("Recieved Question: {:?}", question);
 
-            if let Ok(result) = recursive_lookup(&question.name, question.q_type, ReqProtocol::TCP).await {
+            if let Ok(result) =
+                recursive_lookup(&question.name, question.q_type, ReqProtocol::TCP).await
+            {
                 res_packet.questions.push(question);
                 res_packet.header.res_code = result.header.res_code;
 
@@ -242,7 +263,7 @@ impl DNSTcpServer {
 async fn main() -> Result<()> {
     let mut udp_server = DNSUdpServer::new(("0.0.0.0", 2053)).await?;
     let udp_server_handle = tokio::spawn(async move {
-        if let Err(err) =  udp_server.run_server().await {
+        if let Err(err) = udp_server.run_server().await {
             eprintln!("Failed to start UDP server: {}", err);
         }
     });
