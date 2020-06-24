@@ -106,6 +106,7 @@ pub enum QueryType {
     A,
     NS,
     CNAME,
+    SOA,
     MX,
     AAAA
 }
@@ -117,6 +118,7 @@ impl QueryType {
             Self::A => 1,
             Self::NS => 2,
             Self::CNAME => 5,
+            Self::SOA => 6,
             Self::MX => 15,
             Self::AAAA => 28,
         }
@@ -126,6 +128,7 @@ impl QueryType {
             1 => Self::A,
             2 => Self::NS,
             5 => Self::CNAME,
+            6 => Self::SOA,
             15 => Self::MX,
             28 => Self::AAAA,
             _ => Self::UNKNOWN(num)
@@ -215,6 +218,20 @@ pub enum DNSRecord {
         ttl: u32,
         len: u16,
         addr: Ipv6Addr,
+    },
+    SOA {
+        name: String,
+        q_type: QueryType,
+        class: u16,
+        ttl: u32,
+        len: u16,
+        mname: String,
+        rname: String,
+        serial: u32,
+        refresh: u32,
+        retry: u32,
+        expire: u32,
+        minimum: u32,
     }
 }
 
@@ -303,6 +320,33 @@ impl DNSRecord {
                     addr: addr
                 })
             }
+            QueryType::SOA => {
+                let mut mname = String::new();
+                buf.read_qname(&mut mname)?;
+                let mut rname = String::new();
+                buf.read_qname(&mut rname)?;
+                let serial = buf.read_u32()?;
+                let refresh = buf.read_u32()?;
+                let retry = buf.read_u32()?;
+                let expire = buf.read_u32()?;
+                let minimum = buf.read_u32()?;
+
+                Ok(DNSRecord::SOA {
+                    name: domain,
+                    q_type: q_type,
+                    class: class,
+                    ttl: ttl,
+                    len: len,
+                    mname,
+                    rname,
+                    serial,
+                    refresh,
+                    retry,
+                    expire,
+                    minimum,
+                })
+
+            },
             QueryType::UNKNOWN(_) => {
                 buf.step(len as usize)?; // Skip the data length of this particular record type 
                 Ok(DNSRecord::UNKNOWN {
@@ -398,6 +442,33 @@ impl DNSRecord {
                 for segment in addr.segments().iter() {
                     buf.write_u16(*segment)?;
                 }
+            },
+            DNSRecord::SOA {
+                ref name,
+                q_type,
+                class,
+                ttl,
+                len,
+                ref mname,
+                ref rname,
+                serial,
+                refresh,
+                retry,
+                expire,
+                minimum,
+            } => {
+                buf.write_qname(&name)?;
+                buf.write_u16(q_type.to_num())?;
+                buf.write_u16(class)?;
+                buf.write_u32(ttl)?;
+                buf.write_u16(len)?;
+                buf.write_qname(&mname)?;
+                buf.write_qname(&rname)?;
+                buf.write_u32(serial)?;
+                buf.write_u32(refresh)?;
+                buf.write_u32(retry)?;
+                buf.write_u32(expire)?;
+                buf.write_u32(minimum)?;
             }
             DNSRecord::UNKNOWN { .. } => {
                 println!("SKipping unknown record!");

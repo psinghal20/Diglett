@@ -65,7 +65,6 @@ pub trait PacketBufferTrait {
 
                 delim = "."; //After initial null delimiter use, we add period as delimiter
                 pos += len as usize;
-                // println!("LEN: {}", len);
             }
         }
 
