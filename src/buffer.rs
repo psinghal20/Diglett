@@ -1,6 +1,7 @@
 use eyre::{eyre, Result};
-use tokio::net::TcpStream;
+use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 pub trait PacketBufferTrait {
     fn read(&mut self) -> Result<u8>;
@@ -11,6 +12,8 @@ pub trait PacketBufferTrait {
     fn seek(&mut self, pos: usize) -> Result<()>;
     fn step(&mut self, steps: usize) -> Result<()>;
     fn write(&mut self, val: u8) -> Result<()>;
+    fn get_label(&self, key: &str) -> Option<usize>;
+    fn set_label(&mut self, key: &str, value: usize);
 
     fn read_u16(&mut self) -> Result<u16> {
         let res = ((self.read()? as u16) << 8) | (self.read()? as u16);
@@ -18,7 +21,7 @@ pub trait PacketBufferTrait {
     }
 
     fn read_u32(&mut self) -> Result<u32> {
-        let res = ((self.read_u16()? as u32) << 16 ) | (self.read_u16()? as u32);
+        let res = ((self.read_u16()? as u32) << 16) | (self.read_u16()? as u32);
         Ok(res)
     }
 
@@ -34,7 +37,6 @@ pub trait PacketBufferTrait {
         Ok(())
     }
 
-
     fn read_qname(&mut self, output: &mut String) -> Result<()> {
         let mut pos = self.pos();
         let mut jump = false;
@@ -42,13 +44,13 @@ pub trait PacketBufferTrait {
 
         loop {
             let len = self.get(pos)?;
-            if(len & 0xC0) == 0xC0 {
+            if (len & 0xC0) == 0xC0 {
                 // The first two bits are 1 so we need to jump
                 if !jump {
                     self.seek(pos + 2)?;
                 }
 
-                let byte2 = self.get(pos+1)? as u16;
+                let byte2 = self.get(pos + 1)? as u16;
                 let offset = ((len as u16) ^ 0xC0) << 8 | byte2;
                 pos = offset as usize;
                 jump = true;
@@ -75,11 +77,21 @@ pub trait PacketBufferTrait {
     }
 
     fn write_qname(&mut self, qname: &str) -> Result<()> {
-        for label in qname.split('.') {
+        let qname_split = qname.split('.').collect::<Vec<&str>>();
+        for (i, label) in qname_split.iter().enumerate() {
+            let search_label = qname_split[i..].join(".");
+            if let Some(label_pos) = self.get_label(&search_label) {
+                let jump_pos = label_pos as u16 | 0xc000;
+                self.write_u16(jump_pos)?;
+                return Ok(());
+            }
+            self.set_label(&search_label, self.pos());
+
             let len = label.len();
             if len > 63 {
                 return Err(eyre!("Length exceeds 63 characters"));
             }
+
             self.write(len as u8)?;
             for byte in label.bytes() {
                 self.write(byte)?;
@@ -94,6 +106,7 @@ pub trait PacketBufferTrait {
 pub struct ArrayBuffer {
     pub buf: [u8; 512],
     pub pos: usize,
+    pub label_map: HashMap<String, usize>,
 }
 
 impl PacketBufferTrait for ArrayBuffer {
@@ -101,7 +114,7 @@ impl PacketBufferTrait for ArrayBuffer {
         self.pos
     }
 
-    fn step(&mut self, steps: usize) -> Result<()>{
+    fn step(&mut self, steps: usize) -> Result<()> {
         if self.pos + steps > 512 {
             return Err(eyre!("Buffer position exceeded, pos: {}", self.pos));
         }
@@ -138,7 +151,7 @@ impl PacketBufferTrait for ArrayBuffer {
         if pos >= 512 {
             return Err(eyre!("Buffer position exceeded, pos: {}", self.pos));
         }
-        let res = &self.buf[pos..pos+len];
+        let res = &self.buf[pos..pos + len];
         Ok(res)
     }
 
@@ -156,6 +169,13 @@ impl PacketBufferTrait for ArrayBuffer {
         Ok(())
     }
 
+    fn get_label(&self, key: &str) -> Option<usize> {
+        self.label_map.get(key).cloned()
+    }
+
+    fn set_label(&mut self, key: &str, value: usize) {
+        self.label_map.insert(key.to_string(), value);
+    }
 }
 
 impl ArrayBuffer {
@@ -163,13 +183,15 @@ impl ArrayBuffer {
         return ArrayBuffer {
             buf: [0; 512],
             pos: 0,
+            label_map: HashMap::new(),
         };
     }
 }
 
 pub struct VecBuffer {
     pub buf: Vec<u8>,
-    pub pos: usize
+    pub pos: usize,
+    pub label_map: HashMap<String, usize>,
 }
 
 impl PacketBufferTrait for VecBuffer {
@@ -214,7 +236,7 @@ impl PacketBufferTrait for VecBuffer {
         if pos >= self.buf.len() {
             return Err(eyre!("Buffer position exceeded, pos: {}", self.pos));
         }
-        let res = &self.buf[pos..pos+len];
+        let res = &self.buf[pos..pos + len];
         Ok(res)
     }
 
@@ -228,6 +250,14 @@ impl PacketBufferTrait for VecBuffer {
         self.pos += 1;
         Ok(())
     }
+
+    fn get_label(&self, key: &str) -> Option<usize> {
+        self.label_map.get(key).cloned()
+    }
+
+    fn set_label(&mut self, key: &str, value: usize) {
+        self.label_map.insert(key.to_string(), value);
+    }
 }
 
 impl VecBuffer {
@@ -235,6 +265,7 @@ impl VecBuffer {
         VecBuffer {
             buf: Vec::new(),
             pos: 0,
+            label_map: HashMap::new(),
         }
     }
 
@@ -246,6 +277,7 @@ impl VecBuffer {
         Ok(VecBuffer {
             buf: res_vec,
             pos: 0,
+            label_map: HashMap::new(),
         })
     }
 
