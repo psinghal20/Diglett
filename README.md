@@ -3,7 +3,8 @@ A little toy DNS recursive resolver to learn more about DNS, following the amazi
 
 ## TODO:
 - [x] Add concurrency to the server using async-await.
-- [] Look into DNSSEC feature.
+- [ ] Look into DNSSEC feature.
 - [x] Add TCP support
-- [] Add eDNS support
-- [] Add caching Support
+- [ ] Add eDNS support
+- [x] Add caching Support
+- [ ] Improve Caching code(It's a mess)
