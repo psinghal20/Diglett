@@ -3,8 +3,11 @@ use diglett::*;
 use eyre::Result;
 use futures::future::BoxFuture;
 use std::net;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use cache::DNSCache;
 
 async fn udp_lookup(qname: &str, q_type: QueryType, server: (Ipv4Addr, u16)) -> Result<DNSPacket> {
     let mut socket = UdpSocket::bind(("0.0.0.0", 9999)).await?;
@@ -42,14 +45,24 @@ async fn tcp_lookup(qname: &str, q_type: QueryType, server: (Ipv4Addr, u16)) -> 
     Ok(res_packet)
 }
 
-fn recursive_lookup(
-    qname: &'_ str,
+fn recursive_lookup<'a>(
+    qname: &'a str,
     q_type: QueryType,
     protocol: ReqProtocol,
-) -> BoxFuture<'_, Result<DNSPacket>> {
+    cache: &'a mut DNSCache
+) -> BoxFuture<'a , Result<DNSPacket>> {
     Box::pin(async move {
         let mut ns = "198.41.0.4".parse::<Ipv4Addr>()?;
-
+        if let Some(result) = cache.get_records(qname, q_type) {
+            println!("Found result in cache");
+            return Ok(result);
+        }
+        // } else {
+        //     if let Some(a_record) = cache.get_nearest_a_record(qname, q_type) {
+        //         ns = a_record;
+        //         println!("Chaning NS using cache");
+        //     }
+        // }
         loop {
             println!("attempting lookup of {:?} {} with ns {}", q_type, qname, ns);
 
@@ -59,6 +72,8 @@ fn recursive_lookup(
                 ReqProtocol::UDP => udp_lookup(qname, q_type, server).await?,
                 ReqProtocol::TCP => tcp_lookup(qname, q_type, server).await?,
             };
+
+            cache.set_records(qname, q_type, response.clone());
 
             if !response.answers.is_empty() && response.header.res_code == RCode::NOERROR {
                 return Ok(response);
@@ -78,7 +93,7 @@ fn recursive_lookup(
                 None => return Ok(response),
             };
 
-            let recursive_response = recursive_lookup(new_ns_name, QueryType::A, protocol).await?;
+            let recursive_response = recursive_lookup(new_ns_name, QueryType::A, protocol, cache).await?;
 
             if let Some(new_ns) = recursive_response.get_random_a() {
                 ns = new_ns;
@@ -99,15 +114,17 @@ enum ReqProtocol {
 struct DNSUdpServer {
     tokio_socket: UdpSocket,
     std_socket: net::UdpSocket,
+    cache: DNSCache,
 }
 
 impl DNSUdpServer {
-    async fn new(addr: (&str, u16)) -> Result<DNSUdpServer> {
+    async fn new(addr: (&str, u16), cache: DNSCache) -> Result<DNSUdpServer> {
         let std_socket = net::UdpSocket::bind(addr)?;
         let tokio_socket = UdpSocket::from_std(std_socket.try_clone()?)?;
         Ok(DNSUdpServer {
             tokio_socket,
             std_socket,
+            cache
         })
     }
 
@@ -123,9 +140,10 @@ impl DNSUdpServer {
                 }
             };
             let std_socket_clone = self.std_socket.try_clone()?;
+            let cache_clone = self.cache.clone();
             tokio::spawn(async move {
                 if let Err(err) =
-                    DNSUdpServer::handle_request(std_socket_clone, req_buffer, src).await
+                    DNSUdpServer::handle_request(std_socket_clone, req_buffer, src, cache_clone).await
                 {
                     println!("Failed to handle request from src {} : {}", src, err);
                 }
@@ -137,6 +155,7 @@ impl DNSUdpServer {
         socket: net::UdpSocket,
         mut req_buffer: ArrayBuffer,
         src: SocketAddr,
+        mut cache: DNSCache
     ) -> Result<()> {
         let mut request_packet = DNSPacket::from_buffer(&mut req_buffer)?;
 
@@ -150,7 +169,7 @@ impl DNSUdpServer {
             println!("Recieved Question: {:?}", question);
 
             if let Ok(result) =
-                recursive_lookup(&question.name, question.q_type, ReqProtocol::UDP).await
+                recursive_lookup(&question.name, question.q_type, ReqProtocol::UDP, &mut cache).await
             {
                 res_packet.questions.push(question);
                 res_packet.header.res_code = result.header.res_code;
@@ -189,20 +208,23 @@ impl DNSUdpServer {
 
 struct DNSTcpServer {
     listener: TcpListener,
+    cache: DNSCache,
 }
 
 impl DNSTcpServer {
-    async fn new(addr: (&str, u16)) -> Result<DNSTcpServer> {
+    async fn new(addr: (&str, u16), cache: DNSCache) -> Result<DNSTcpServer> {
         Ok(DNSTcpServer {
             listener: TcpListener::bind(addr).await?,
+            cache,
         })
     }
 
     async fn run_server(&mut self) -> Result<()> {
         loop {
             let (mut socket, _) = self.listener.accept().await?;
+            let cache_clone = self.cache.clone();
             tokio::spawn(async move {
-                if let Err(err) = DNSTcpServer::handle_connection(&mut socket).await {
+                if let Err(err) = DNSTcpServer::handle_connection(&mut socket, cache_clone).await {
                     eprintln!(
                         "Failed to handle request from src {} : {}",
                         socket.peer_addr().unwrap(),
@@ -213,7 +235,7 @@ impl DNSTcpServer {
         }
     }
 
-    async fn handle_connection(socket: &mut TcpStream) -> Result<()> {
+    async fn handle_connection(socket: &mut TcpStream, mut cache: DNSCache) -> Result<()> {
         let mut req_buffer = VecBuffer::from_socket(socket).await?;
 
         let mut request_packet = DNSPacket::from_buffer(&mut req_buffer)?;
@@ -228,7 +250,7 @@ impl DNSTcpServer {
             println!("Recieved Question: {:?}", question);
 
             if let Ok(result) =
-                recursive_lookup(&question.name, question.q_type, ReqProtocol::TCP).await
+                recursive_lookup(&question.name, question.q_type, ReqProtocol::TCP, &mut cache).await
             {
                 res_packet.questions.push(question);
                 res_packet.header.res_code = result.header.res_code;
@@ -261,13 +283,17 @@ impl DNSTcpServer {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut udp_server = DNSUdpServer::new(("0.0.0.0", 2053)).await?;
+    let cache = DNSCache {
+        map: Arc::new(Mutex::new(HashMap::new()))
+    };
+    let tcp_cache = cache.clone();
+    let mut udp_server = DNSUdpServer::new(("0.0.0.0", 2053), cache).await?;
     let udp_server_handle = tokio::spawn(async move {
         if let Err(err) = udp_server.run_server().await {
             eprintln!("Failed to start UDP server: {}", err);
         }
     });
-    let mut tcp_server = DNSTcpServer::new(("0.0.0.0", 2054)).await?;
+    let mut tcp_server = DNSTcpServer::new(("0.0.0.0", 2054), tcp_cache).await?;
     let tcp_server_handle = tokio::spawn(async move {
         if let Err(err) = tcp_server.run_server().await {
             eprintln!("Failed to start TCP server: {}", err);

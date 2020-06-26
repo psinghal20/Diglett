@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod cache;
 use buffer::*;
 use eyre::Result;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -26,7 +27,7 @@ impl RCode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DNSHeader {
     pub id: u16,
     pub query_response: bool,
@@ -137,7 +138,7 @@ impl QueryType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DNSQuestion {
     pub name: String,
     pub q_type: QueryType,
@@ -164,7 +165,7 @@ impl DNSQuestion {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DNSRecord {
     UNKNOWN {
         name: String,
@@ -231,6 +232,17 @@ pub enum DNSRecord {
 }
 
 impl DNSRecord {
+    pub fn get_ttl(&self) -> u32 {
+        match *self {
+            DNSRecord::A { ttl, .. } => ttl,
+            DNSRecord::AAAA { ttl, .. } => ttl,
+            DNSRecord::CNAME { ttl, .. } => ttl,
+            DNSRecord::SOA { ttl, .. } => ttl,
+            DNSRecord::MX { ttl, .. } => ttl,
+            DNSRecord::NS { ttl, .. } => ttl, 
+            DNSRecord::UNKNOWN { ttl, .. } => ttl,
+        }
+    }
     pub fn read<T: PacketBufferTrait>(buf: &mut T) -> Result<DNSRecord> {
         let mut domain = String::new();
         buf.read_qname(&mut domain)?;
@@ -477,7 +489,7 @@ impl DNSRecord {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DNSPacket {
     pub header: DNSHeader,
     pub questions: Vec<DNSQuestion>,
@@ -581,5 +593,13 @@ impl DNSPacket {
 
     pub fn get_unresolved_ns<'a>(&'a self, qname: &'a str) -> Option<&'a str> {
         self.get_ns(qname).map(|(_, host)| host).next()
+    }
+}
+
+impl From<Vec<DNSRecord>> for DNSPacket {
+    fn from(records: Vec<DNSRecord>) -> Self {
+        let mut packet = DNSPacket::new();
+        packet.answers = records;
+        packet
     }
 }
