@@ -70,8 +70,6 @@ You can change these defaults directly in `main()` or in `recursive_lookup()` an
 Results are cached based on TTL, and subsequent queries will use the cache when valid entries are present.
 
 ## Roadmap
-Tracked in `docs/issues.md` and mirrored as GitHub issues (can be created via `scripts/create_issues.sh`). Highlights include:
-
 - [x] Add concurrency to the server using async/await
 - [x] Add TCP support
 - [x] Add caching support
